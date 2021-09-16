@@ -9,6 +9,14 @@
 
   [[https://xkcd.com/869/][http://imgs.xkcd.com/comics/server_attention_span.png]]
 
+** Differences to cljs-http
+
+- Returns a promesa promise instead of a channel
+- The `:cancel` option is now a promesa promise
+- The `:progress` option is now a function that will be called on each update
+- The `cljs-http.core/abort!` function has been removed
+- The `:channel` option has been removed
+
 ** Usage
 
 *** Imports

@@ -6,8 +6,8 @@
             [cljs.reader :refer [read-string]]
             [clojure.string :refer [blank? join split]]
             [goog.Uri :as uri]
-            [no.en.core :refer [url-encode url-decode]])
-  (:require-macros [cljs.core.async.macros :refer [go]]))
+            [no.en.core :refer [url-encode url-decode]]
+            [promesa.core :as prom]))
 
 (defn if-pos [v]
   (when (and v (pos? v)) v))
@@ -107,8 +107,8 @@
   "Decode application/edn responses."
   [client]
   (fn [request]
-    (-> #(decode-body % read-string "application/edn" (:request-method request))
-        (async/map [(client request)]))))
+    (prom/then (client request)
+               #(decode-body % read-string "application/edn" (:request-method request)))))
 
 (defn wrap-default-headers
   [client & [default-headers]]
@@ -164,9 +164,8 @@
     (let [{:keys [decoding decoding-opts]} (merge default-transit-opts
                                                   (:transit-opts request))
           transit-decode #(util/transit-decode % decoding decoding-opts)]
-
-      (-> #(decode-body % transit-decode "application/transit+json" (:request-method request))
-          (async/map [(client request)])))))
+      (prom/then (client request)
+                 #(decode-body % transit-decode "application/transit+json" (:request-method request))))))
 
 (defn wrap-json-params
   "Encode :json-params in the `request` :body and set the appropriate
@@ -185,8 +184,8 @@
   "Decode application/json responses."
   [client]
   (fn [request]
-    (-> #(decode-body % util/json-decode "application/json" (:request-method request))
-        (async/map [(client request)]))))
+    (prom/then (client request)
+               #(decode-body % util/json-decode "application/json" (:request-method request)))))
 
 (defn wrap-query-params [client]
   (fn [{:keys [query-params] :as req}]
@@ -261,15 +260,6 @@
                             (str "Bearer " oauth-token))))
       (client req))))
 
-(defn wrap-channel-from-request-map
-  "Pipe the response-channel into the request-map's
-   custom channel (e.g. to enable transducers)"
-  [client]
-  (fn [request]
-    (if-let [custom-channel (:channel request)]
-      (async/pipe (client request) custom-channel)
-      (client request))))
-
 (defn wrap-request
   "Returns a batteries-included HTTP request function coresponding to the given
    core client. See client/request"
@@ -290,7 +280,6 @@
       wrap-oauth
       wrap-method
       wrap-url
-      wrap-channel-from-request-map
       wrap-default-headers))
 
 (def #^{:doc

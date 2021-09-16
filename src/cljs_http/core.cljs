@@ -1,22 +1,8 @@
 (ns cljs-http.core
   (:import [goog.net EventType XhrIo]
            [goog.net Jsonp])
-  (:require-macros [cljs.core.async.macros :refer [go]])
   (:require [cljs-http.util :as util]
-            [cljs.core.async :as async]))
-
-(def pending-requests (atom {}))
-
-(defn abort!
-  "Attempt to close the given channel and abort the pending HTTP request
-  with which it is associated."
-  [channel]
-  (when-let [req (@pending-requests channel)]
-    (swap! pending-requests dissoc channel)
-    (async/close! channel)
-    (if (.hasOwnProperty req "abort")
-      (.abort req)
-      (.cancel (:jsonp req) (:request req)))))
+            [promesa.core :as prom]))
 
 (defn- aborted? [xhr]
   (= (.getLastErrorCode xhr) goog.net.ErrorCode.ABORT))
@@ -70,14 +56,13 @@
 
 (defn xhr
   "Execute the HTTP request corresponding to the given Ring request
-  map and return a core.async channel."
-  [{:keys [request-method headers body cancel progress] :as request}]
-  (let [channel (async/chan)
+  map and return a promesa promise."
+  [{:keys [request-method headers body progress cancel] :as request}]
+  (let [prom (prom/deferred)
         request-url (util/build-url request)
         method (name (or request-method :get))
         headers (util/build-headers headers)
         xhr (build-xhr request)]
-    (swap! pending-requests assoc channel xhr)
     (.listen xhr EventType.COMPLETE
              (fn [evt]
                (let [target (.-target evt)
@@ -88,36 +73,38 @@
                                :trace-redirects [request-url (.getLastUri target)]
                                :error-code (error-kw (.getLastErrorCode target))
                                :error-text (.getLastError target)}]
-                 (if-not (aborted? xhr)
-                   (async/put! channel response))
-                 (swap! pending-requests dissoc channel)
-                 (when cancel (async/close! cancel))
-                 (async/close! channel))))
+                 (if (aborted? xhr)
+                   (prom/resolve! prom nil)
+                   (prom/resolve! prom response)))))
 
     (when progress
+      (println "progress is on")
       (let [listener (fn [direction evt]
-                       (async/put! progress (merge {:direction direction :loaded (.-loaded evt)}
-                                                   (when (.-lengthComputable evt) {:total (.-total evt)}))))]
+                       (println "pogress!" direction evt)
+                       (progress (merge {:direction direction :loaded (.-loaded evt)}
+                                        (when (.-lengthComputable evt) {:total (.-total evt)}))))]
         (doto xhr
           (.setProgressEventsEnabled true)
           (.listen EventType.UPLOAD_PROGRESS (partial listener :upload))
           (.listen EventType.DOWNLOAD_PROGRESS (partial listener :download)))))
 
-    (.send xhr request-url method body headers)
     (when cancel
-      (go
-        (async/<! cancel)
-        (when (not (.isComplete xhr))
-          (.abort xhr))))
-    channel))
+      (prom/then cancel
+                 (fn [_]
+                   (when (not (.isComplete xhr))
+                     (.abort xhr)))))
+
+    (.send xhr request-url method body headers)
+
+    prom))
 
 (defn jsonp
   "Execute the JSONP request corresponding to the given Ring request
-  map and return a core.async channel."
-  [{:keys [timeout callback-name cancel keywordize-keys?]
+  map and return a promesa promise."
+  [{:keys [timeout callback-name keywordize-keys? cancel]
     :or {keywordize-keys? true}
     :as request}]
-  (let [channel (async/chan)
+  (let [prom (prom/deferred)
         jsonp (Jsonp. (util/build-url request) callback-name)]
     (.setRequestTimeout jsonp timeout)
     (let [req (.send jsonp nil
@@ -125,20 +112,15 @@
                        (let [response {:status 200
                                        :success true
                                        :body (js->clj data :keywordize-keys keywordize-keys?)}]
-                         (async/put! channel response)
-                         (swap! pending-requests dissoc channel)
-                         (when cancel (async/close! cancel))
-                         (async/close! channel)))
-                     (fn error-callback []
-                         (swap! pending-requests dissoc channel)
-                         (when cancel (async/close! cancel))
-                         (async/close! channel)))]
-      (swap! pending-requests assoc channel {:jsonp jsonp :request req})
+                         (prom/resolve! prom response)))
+                     (fn error-callback [error]
+                       (prom/reject! prom error)))]
+
       (when cancel
-        (go
-          (async/<! cancel)
-          (.cancel jsonp req))))
-    channel))
+        (prom/then cancel (fn [_]
+                            (.cancel jsonp req)))))
+
+    prom))
 
 (defn request
   "Execute the HTTP request corresponding to the given Ring request

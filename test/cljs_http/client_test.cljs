@@ -1,9 +1,8 @@
 (ns cljs-http.client-test
-  (:require-macros [cljs.core.async.macros :refer [go]])
-  (:require [cljs.core.async :as async]
-            [cljs-http.client :as client]
+  (:require [cljs-http.client :as client]
             [cljs-http.util :as util]
-            [cljs.test :refer-macros [async is deftest testing]]))
+            [cljs.test :refer-macros [async is deftest testing]]
+            [promesa.core :as prom]))
 
 (deftest test-parse-query-params
   (is (nil? (client/parse-query-params nil)))
@@ -145,75 +144,63 @@
       (is (= "untouched" (:body response)))
       (is (not (contains? (:headers response) "content-type"))))))
 
-(deftest test-custom-channel
-  (let [c (async/chan 1)
-        request-no-chan {:request-method :get :url "http://localhost/"}
-        request-with-chan {:request-method :get :url "http://localhost/" :channel c}]
-    (testing "request api with middleware"
-      (is (not= c (client/request request-no-chan)))
-      (is (= c (client/request request-with-chan))))))
-
-(deftest ^:async test-cancel-channel
-  (let [cancel (async/chan 1)
-        request (client/request {:request-method :get :url "http://google.com" :cancel cancel})]
-    (async/close! cancel)
-    (testing "output channel is closed if request is cancelled"
+(deftest ^:async test-cancel
+  (let [request (client/request {:request-method :get :url "http://google.com" :cancel (prom/resolved nil)})]
+    (testing "promise returns nil when cancelled"
       (async done
-        (go
-          (let [resp (async/<! request)]
-            (is (= resp nil)))
-          (done))))))
+             (-> request
+                 (prom/then (fn [resp]
+                              (is (nil? resp))))
+                 (prom/finally (fn []
+                                 (done))))))))
 
 ;; See http://doc.jsfiddle.net/use/echo.html for details on the endpoint used
 ;; for JSONP tests
-(deftest ^:async test-cancel-jsonp-channel
-  (let [cancel (async/chan 1)
-        request (client/request {:request-method :jsonp :url "http://jsfiddle.net/echo/jsonp/" :cancel cancel})]
-    (async/close! cancel)
-    (testing "output channel is closed if request is cancelled"
+(deftest ^:async test-cancel-jsonp
+  (let [request (client/request {:request-method :jsonp :url "http://jsfiddle.net/echo/jsonp/" :cancel (prom/resolved nil)})]
+    (testing "promise returns nil when cancelled"
       (async done
-        (go
-          (let [resp (async/<! request)]
-            (is (= resp nil)))
-          (done))))))
+             (-> request
+                 (prom/then (fn [resp]
+                              (is (nil? resp))))
+                 (prom/finally (fn []
+                                 (done))))))))
 
 (deftest ^:async test-jsonp
   (let [request (client/jsonp "http://jsfiddle.net/echo/jsonp/"
-                              {:query-params {:foo "bar"}
-                               :channel (async/chan 1 (map :body))})]
+                              {:query-params {:foo "bar"}})]
     (testing "jsonp request"
       (async done
-        (go
-          (let [resp (async/<! request)]
-            (is (= (:foo resp) "bar")))
-          (done))))))
+             (-> request
+                 (prom/then (fn [resp]
+                              (is (= "bar" (get-in resp [:body :foo])))))
+                 (prom/finally (fn []
+                                 (done))))))))
 
 (deftest ^:async test-keywordize-jsonp
   (let [request (client/jsonp "http://jsfiddle.net/echo/jsonp/"
                               {:keywordize-keys? false
-                               :query-params {:foo ""}
-                               :channel (async/chan 1 (map :body))})]
+                               :query-params {:foo ""}})]
     (testing "JSON-P response keys aren't converted to keywords"
       (async done
-        (go
-          (let [resp (async/<! request)]
-            (is (every? string? (keys resp))))
-          (done))))))
+             (-> request
+                 (prom/then (fn [resp]
+                              (is (every? string? (keys (:body resp))))))
+                 (prom/finally (fn []
+                                 (done))))))))
 
-#_(deftest ^:async test-progress-channel-returns-progress
-  (let [progress (async/chan 1)
-        _ (client/post "http://www.google.com"
-                       {:json-params {:foo :bar}
-                        :progress    progress})]
-    (testing "progress channel returns progress"
-      (async done
-        (go
-          (let [return (async/<! progress)]
-            (is (map? return))
-            (is (= :upload (:direction return)))
-            (is (contains? return :total))
-            (is (contains? return :loaded)))
-          (done))))))
+;; TODO this should work
+#_(deftest ^:async test-progress-callback-returns-progress
+  (async done
+         (let [progress (fn [return]
+                          (is (map? return))
+                          (is (= :upload (:direction return)))
+                          (is (contains? return :total))
+                          (is (contains? return :loaded))
+                          (done))]
+           (client/post "http://www.google.com"
+                        {:json-params {:foo :bar}
+                         :progress    progress}))))
 
 (deftest test-decode-body
   (let [headers {"content-type" "application/transit+json"}
@@ -255,21 +242,23 @@
   (testing "Successful/unsuccessful response results in appropriate :error-code"
     (let [success-req (client/get "http://httpbin.org/get")
           timeout-req (client/get "http://httpbin.org/delay/10" {:timeout 1})]
+
       (async done
-        (go
-          (is (= :no-error (:error-code (async/<! success-req))))
-          (is (= :timeout  (:error-code (async/<! timeout-req))))
-          (done))))))
+             (-> (prom/all [success-req timeout-req])
+                 (prom/then (fn [[success-resp timeout-resp]]
+                              (is (= :no-error (:error-code success-resp)))
+                              (is (= :timeout  (:error-code timeout-resp)))
+                              (done))))))))
 
 (deftest ^:async response-type
   (let [request (client/get "http://httpbin.org/image/png"
                             {:response-type :array-buffer})]
     (testing "Getting and reading arraybuffer response"
       (async done
-        (go
-          (let [resp (async/<! request)
-                body (js/Uint8Array. (:body resp))
-                sign (array-seq (.subarray body 0 8))]
-            ;; PNG image signature
-            (is (= [137 80 78 71 13 10 26 10] sign))
-            (done)))))))
+             (-> request
+                 (prom/then (fn [resp]
+                              (let [body (js/Uint8Array. (:body resp))
+                                    sign (array-seq (.subarray body 0 8))]
+                                ;; PNG image signature
+                                (is (= [137 80 78 71 13 10 26 10] sign))
+                                (done)))))))))

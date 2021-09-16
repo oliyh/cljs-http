@@ -8,6 +8,7 @@
                  [org.clojure/clojurescript "1.10.238" :scope "provided"]
                  [org.clojure/core.async "0.4.474"]
                  [org.clojure/tools.namespace "0.2.11"]
+                 [funcool/promesa "6.0.2"]
                  [com.cognitect/transit-cljs "0.8.256"]]
   :plugins [[lein-cljsbuild "1.1.7"]
             [lein-doo "0.1.10"]]
