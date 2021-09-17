@@ -1,6 +1,6 @@
-(defproject cljs-http "0.1.47-SNAPSHOT"
-  :description "A ClojureScript HTTP library."
-  :url "https://github.com/r0man/cljs-http"
+(defproject com.github.oliyh/cljs-http-promise "0.1.47-SNAPSHOT"
+  :description "A ClojureScript HTTP library, forked from https://github.com/r0man/cljs-http and returning promises"
+  :url "https://github.com/oliyh/cljs-http-promise"
   :license {:name "Eclipse Public License"
             :url "https://www.eclipse.org/legal/epl-v10.html"}
   :dependencies [[noencore "0.3.4"]
