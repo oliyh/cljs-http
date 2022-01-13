@@ -1,4 +1,4 @@
-(defproject com.github.oliyh/cljs-http-promise "0.1.47"
+(defproject com.github.oliyh/cljs-http-promise "0.1.48-SNAPSHOT"
   :description "A ClojureScript HTTP library, forked from https://github.com/r0man/cljs-http and returning promises"
   :url "https://github.com/oliyh/cljs-http-promise"
   :license {:name "Eclipse Public License"
